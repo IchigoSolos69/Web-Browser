@@ -44,7 +44,7 @@ This list provides limited coverage. It does not include comprehensive ad-filter
 
 ## Downloads
 
-Each download prompts for a destination, initially suggesting the server's filename in the profile's Downloads folder. Cancel dismisses the request. The download button opens that Downloads folder; a file saved somewhere else remains at the location you selected.
+File downloads prompt for a destination, initially suggesting the server's filename in the profile's Downloads folder. Cancel dismisses the request. Qt's built-in Save Page dialog supplies its own destination. The download button opens that Downloads folder; a file saved somewhere else remains at the location you selected.
 
 ## Saved browser data
 

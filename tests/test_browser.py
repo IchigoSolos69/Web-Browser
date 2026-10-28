@@ -13,12 +13,14 @@ from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Offscreen tests do not need a hardware GPU context.
+os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 
 from PyQt6 import sip
 from PyQt6.QtCore import QPoint, Qt, QUrl
 from PyQt6.QtTest import QSignalSpy, QTest
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtWebEngineCore import QWebEngineNewWindowRequest, QWebEngineProfile
+from PyQt6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEngineNewWindowRequest, QWebEngineProfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -225,6 +227,11 @@ class BrowserTests(unittest.TestCase):
             self.assertEqual(self.first.url().toString(), self.base + "/first")
         self.assertIn("HTTP", self.window.statusBar().currentMessage())
 
+    def test_encoded_addresses_can_be_submitted_again(self):
+        load(self.first, self.base + "/has%20space?q=hello%20world")
+        self.assertIn("%20", self.window.url_bar.text())
+        self.assertEqual(browser.normalize_url(self.window.url_bar.text()), self.first.url())
+
     def test_toolbar_navigation_uses_active_tab(self):
         self.window.url_bar.setText(self.base + "/second")
         finished = QSignalSpy(self.first.loadFinished)
@@ -275,14 +282,48 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         self.assertIs(self.window.tab_widget.currentWidget(), opened)
 
+    def test_control_click_opens_real_background_tab(self):
+        load(self.first, self.base + "/links")
+        rect = javascript(self.first, "document.getElementById('new').getBoundingClientRect().toJSON()")
+        QTest.mouseClick(
+            self.first.focusProxy(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ControlModifier,
+            pos=QPoint(int(rect["x"] + 20), int(rect["y"] + 20)),
+        )
+        wait_until(lambda: self.window.tab_widget.count() == 2)
+        opened = self.window.tab_widget.widget(1)
+        wait_until(lambda: opened.url().toString() == self.base + "/destination")
+        self.assertIs(self.window.tab_widget.currentWidget(), self.first)
+        self.assertEqual(self.window.url_bar.text(), self.base + "/links")
+
+    def test_automatic_javascript_popup_is_blocked(self):
+        requests = QSignalSpy(self.first.page().newWindowRequested)
+        javascript(self.first, "window.open('/destination', '_blank'); true")
+        wait_until(lambda: len(requests) > 0)
+        self.assertEqual(self.window.tab_widget.count(), 1)
+
+    def test_keyboard_shortcuts(self):
+        with patch.object(browser, "HOMEPAGE", self.base + "/new"):
+            QTest.keyClick(self.window.url_bar, Qt.Key.Key_T, Qt.KeyboardModifier.ControlModifier)
+            wait_until(lambda: self.window.tab_widget.count() == 2)
+        opened = self.window.tab_widget.currentWidget()
+        wait_until(lambda: opened.title() == "/new")
+        finished = QSignalSpy(opened.loadFinished)
+        QTest.keyClick(self.window.url_bar, Qt.Key.Key_R, Qt.KeyboardModifier.ControlModifier)
+        wait_until(lambda: len(finished) > 0)
+        QTest.keyClick(self.window.url_bar, Qt.Key.Key_Escape)
+        self.assertTrue(self.window._shutting_down)
+        self.assertFalse(self.window.isVisible())
+
     def test_download_dialog_accepts_and_cancels(self):
         download = Mock()
+        download.state.return_value = QWebEngineDownloadRequest.DownloadState.DownloadRequested
         download.suggestedFileName.return_value = "fixture.txt"
         target = Path(self.temp.name) / "chosen name.txt"
         with patch.object(browser.QFileDialog, "getSaveFileName", return_value=(str(target), "")) as dialog:
             self.window.download_requested(download)
         self.assertEqual(Path(dialog.call_args.args[2]), Path(self.temp.name) / "fixture.txt")
         self.assertEqual(download.method_calls, [
+            unittest.mock.call.state(),
             unittest.mock.call.suggestedFileName(),
             unittest.mock.call.setDownloadDirectory(str(target.parent)),
             unittest.mock.call.setDownloadFileName(target.name),
@@ -303,6 +344,25 @@ class BrowserTests(unittest.TestCase):
             request = requested[0][0]
             wait_until(request.isFinished)
         self.assertEqual(target.read_bytes(), b"browser regression download\n")
+
+    def test_cancelled_real_download_writes_nothing(self):
+        requested = QSignalSpy(self.profile.downloadRequested)
+        with patch.object(browser.QFileDialog, "getSaveFileName", return_value=("", "")):
+            self.first.page().download(QUrl(self.base + "/download"))
+            wait_until(lambda: len(requested) > 0)
+        self.assertEqual(list(Path(self.temp.name).iterdir()), [])
+
+    def test_save_page_keeps_the_destination_already_chosen_by_qt(self):
+        target = Path(self.temp.name) / "saved.mhtml"
+        requested = QSignalSpy(self.profile.downloadRequested)
+        with patch.object(browser.QFileDialog, "getSaveFileName") as dialog:
+            self.first.page().save(str(target))
+            wait_until(lambda: len(requested) > 0)
+            request = requested[0][0]
+            wait_until(request.isFinished)
+        dialog.assert_not_called()
+        self.assertTrue(target.exists())
+        self.assertGreater(target.stat().st_size, 0)
 
     def test_download_folder_uses_shared_profile(self):
         with patch.object(browser.QDesktopServices, "openUrl", return_value=True) as open_url:

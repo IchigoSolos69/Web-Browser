@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QToolBar,
 )
 from PyQt6.QtWebEngineCore import (
+    QWebEngineDownloadRequest,
     QWebEngineNewWindowRequest,
     QWebEnginePage,
     QWebEngineProfile,
@@ -214,7 +215,7 @@ class WebBrowser(QMainWindow):
 
     def update_url_bar(self, web_view):
         if web_view is not None and web_view is self.tab_widget.currentWidget():
-            self.url_bar.setText(web_view.url().toString())
+            self.url_bar.setText(web_view.url().toString(QUrl.ComponentFormattingOption.FullyEncoded))
 
     def close_tab(self, index):
         if self.tab_widget.count() > 1 and 0 <= index < self.tab_widget.count():
@@ -243,6 +244,9 @@ class WebBrowser(QMainWindow):
         request.openIn(web_view.page())
 
     def download_requested(self, download):
+        # Qt's Save Page dialog has already chosen a path and accepted its request.
+        if download.state() != QWebEngineDownloadRequest.DownloadState.DownloadRequested:
+            return
         suggested_path = Path(self.profile.downloadPath()) / Path(download.suggestedFileName()).name
         download_path, _ = QFileDialog.getSaveFileName(self, "Save File", str(suggested_path), "All Files (*)")
         if not download_path:
